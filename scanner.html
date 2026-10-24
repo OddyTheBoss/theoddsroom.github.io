@@ -33,6 +33,11 @@
   .chk input{width:auto}
   .odds{margin-top:8px;padding-top:8px;border-top:1px solid var(--line);font-size:13px;color:var(--mut)}
   .odds b{color:var(--txt);font-weight:600}
+  .lgs{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .lgs label{display:flex;gap:6px;align-items:center;font-size:14px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px}
+  .lgs input{width:auto;padding:0}
+  .sep{height:1px;background:var(--line);margin:8px 0}
+  .lh{font-size:17px;font-weight:700;margin:18px 0 8px}
   pre{white-space:pre-wrap;font-size:12px;background:#0b0d11;border:1px solid var(--line);border-radius:8px;padding:10px;margin:0}
 </style>
 </head>
@@ -40,25 +45,28 @@
 <h1>Odds Room Scanner</h1>
 
 <div class="ctl">
-  <select id="lg">
-    <option value="PL">Premier League</option>
-    <option value="ELC">Championship</option>
-    <option value="PD">La Liga</option>
-    <option value="SA">Serie A</option>
-    <option value="BL1">Bundesliga</option>
-    <option value="FL1">Ligue 1</option>
-    <option value="DED">Eredivisie</option>
-    <option value="PPL">Primeira Liga</option>
-    <option value="BSA">Brasileirão</option>
-    <option value="CL">Champions League</option>
-  </select>
+  <div class="lgs" id="lgs"></div>
+  <div class="row">
+    <button class="sec" id="allOn">Vse lige</button>
+    <button class="sec" id="allOff">Nobena</button>
+  </div>
+  <div class="row">
+    <button class="sec" id="qToday">Danes</button>
+    <button class="sec" id="qTom">Jutri</button>
+    <button class="sec" id="q7">7 dni</button>
+  </div>
   <div class="row">
     <input type="date" id="d1">
     <input type="date" id="d2">
   </div>
-  <label class="chk"><input type="checkbox" id="wo" checked> Kvote (2 kredita na ligo)</label>
-  <button id="go">Skeniraj</button>
+  <label class="chk"><input type="checkbox" id="wo" checked> Kvote (2 kredita na ligo s tekmami)</label>
+  <button id="go">Skeniraj izbrane lige</button>
   <button id="cpAll" class="sec" style="display:none">Kopiraj vse za Claude</button>
+  <div class="sep"></div>
+  <div class="tn">Rezultati</div>
+  <input type="date" id="rd">
+  <button id="res" class="sec">Prikaži rezultate izbranih lig</button>
+  <button id="cpRes" class="sec" style="display:none">Kopiraj rezultate za Claude</button>
 </div>
 
 <div id="msg" class="msg"></div>
@@ -70,13 +78,28 @@ const $ = (id) => document.getElementById(id);
 let calls = 0, cache = {}, lastText = [], oddsCache = {}, credits = null;
 const SPORT = {PL:"soccer_epl",ELC:"soccer_efl_champ",PD:"soccer_spain_la_liga",SA:"soccer_italy_serie_a",BL1:"soccer_germany_bundesliga",FL1:"soccer_france_ligue_one",DED:"soccer_netherlands_eredivisie",PPL:"soccer_portugal_primeira_liga",BSA:"soccer_brazil_campeonato",CL:"soccer_uefa_champs_league"};
 
-function iso(d){ return d.toISOString().slice(0,10); }
-const today = new Date(), plus = new Date(Date.now() + 7*864e5);
-$("d1").value = iso(today); $("d2").value = iso(plus);
+const LEAGUES = [["PL","Premier League"],["ELC","Championship"],["PD","La Liga"],["SA","Serie A"],["BL1","Bundesliga"],["FL1","Ligue 1"],["DED","Eredivisie"],["PPL","Primeira Liga"],["BSA","Brasileirão"],["CL","Champions League"]];
+$("lgs").innerHTML = LEAGUES.map(([k,n]) => `<label><input type="checkbox" value="${k}" checked> ${n}</label>`).join("");
+const sel = () => [...document.querySelectorAll("#lgs input:checked")].map(x => LEAGUES.find(l => l[0] === x.value));
+$("allOn").onclick = () => document.querySelectorAll("#lgs input").forEach(x => x.checked = true);
+$("allOff").onclick = () => document.querySelectorAll("#lgs input").forEach(x => x.checked = false);
+
+function iso(d){ return d.toLocaleDateString("sv-SE",{timeZone:"Europe/Ljubljana"}); }
+const day = (n) => iso(new Date(Date.now() + n*864e5));
+function setRange(a, b){ $("d1").value = day(a); $("d2").value = day(b); }
+setRange(0, 0); $("rd").value = day(-1);
+$("qToday").onclick = () => setRange(0, 0);
+$("qTom").onclick = () => setRange(1, 1);
+$("q7").onclick = () => setRange(0, 7);
 
 async function api(path){
   calls++;
-  const r = await fetch(WORKER + path);
+  let r = await fetch(WORKER + path);
+  if (r.status === 429){
+    $("msg").textContent = "Omejitev 10 klicev na minuto. Čakam 60 s in nadaljujem...";
+    await new Promise(ok => setTimeout(ok, 61000));
+    r = await fetch(WORKER + path);
+  }
   if (r.status === 429) throw new Error("Preveč klicev. Počakaj 1 minuto.");
   if (!r.ok) throw new Error("Napaka " + r.status + ": " + (await r.text()).slice(0,150));
   return r.json();
@@ -192,9 +215,10 @@ function statLine(s){
 }
 
 function render(lgName, upcoming, finished, events){
-  $("out").innerHTML = ""; lastText = [];
-  if (!upcoming.length){ $("out").innerHTML = '<div class="msg">V tem obdobju ni tekem.</div>'; return; }
-  upcoming.forEach((m, i) => {
+  const lh = document.createElement("div"); lh.className = "lh"; lh.textContent = `${lgName} (${upcoming.length})`;
+  $("out").appendChild(lh);
+  upcoming.forEach((m) => {
+    const i = lastText.length;
     const h = m.homeTeam, a = m.awayTeam;
     const hs = teamStats(finished, h.id), as = teamStats(finished, a.id);
     const hh = teamStats(finished, h.id, "H"), aa = teamStats(finished, a.id, "A");
@@ -255,29 +279,73 @@ function fallback(t, done){
   ta.select(); document.execCommand("copy"); ta.remove(); done();
 }
 
+// local-time window [d1 00:00, d2 24:00) Ljubljana
+function inRange(u, d1, d2){ const d = iso(new Date(u)); return d >= d1 && d <= d2; }
+
+async function getLeague(lg){
+  if (!cache[lg]) cache[lg] = await api(`/competitions/${lg}/matches`);
+  return cache[lg].matches || [];
+}
+
 $("go").onclick = async () => {
-  const lg = $("lg").value, lgName = $("lg").selectedOptions[0].text;
-  const d1 = $("d1").value, d2 = $("d2").value;
-  $("msg").className = "msg"; $("msg").textContent = "Nalagam...";
-  $("out").innerHTML = ""; $("cpAll").style.display = "none";
-  try{
-    if (!cache[lg]) cache[lg] = await api(`/competitions/${lg}/matches`);
-    const all = cache[lg].matches || [];
-    const finished = all.filter(m => m.status === "FINISHED").sort((a,b)=>a.utcDate.localeCompare(b.utcDate));
-    const end = new Date(d2); end.setDate(end.getDate()+1);
-    const upcoming = all.filter(m => !["FINISHED","CANCELLED","AWARDED"].includes(m.status)
-      && new Date(m.utcDate) >= new Date(d1) && new Date(m.utcDate) < end)
-      .sort((a,b)=>a.utcDate.localeCompare(b.utcDate));
-    let events = null, oddsErr = "";
-    if ($("wo").checked && upcoming.length){
-      try{ if (!oddsCache[lg]) oddsCache[lg] = await loadOdds(lg); events = oddsCache[lg]; }
-      catch(e){ oddsErr = " · " + e.message; }
-    }
-    render(lgName, upcoming, finished, events);
-    $("msg").textContent = `${upcoming.length} tekem · Klici: ${calls}` + (credits ? ` · Krediti za kvote: ${credits}` : "") + oddsErr;
-    if (upcoming.length) $("cpAll").style.display = "block";
-  }catch(e){ $("msg").className = "msg err"; $("msg").textContent = e.message; }
+  const lgs = sel(), d1 = $("d1").value, d2 = $("d2").value;
+  $("msg").className = "msg"; $("out").innerHTML = ""; lastText = []; $("cpAll").style.display = "none";
+  if (!lgs.length){ $("msg").textContent = "Izberi vsaj eno ligo."; return; }
+  let total = 0, errs = [], used = [];
+  for (const [lg, lgName] of lgs){
+    $("msg").textContent = `Nalagam ${lgName}...`;
+    try{
+      const all = await getLeague(lg);
+      const finished = all.filter(m => m.status === "FINISHED").sort((a,b)=>a.utcDate.localeCompare(b.utcDate));
+      const upcoming = all.filter(m => !["FINISHED","CANCELLED","AWARDED","IN_PLAY","PAUSED"].includes(m.status)
+        && inRange(m.utcDate, d1, d2)).sort((a,b)=>a.utcDate.localeCompare(b.utcDate));
+      if (!upcoming.length) continue;
+      let events = null;
+      if ($("wo").checked){
+        try{ if (!oddsCache[lg]){ oddsCache[lg] = await loadOdds(lg); used.push(lgName); } events = oddsCache[lg]; }
+        catch(e){ errs.push(lgName + " kvote: " + e.message); }
+      }
+      render(lgName, upcoming, finished, events);
+      total += upcoming.length;
+    }catch(e){ errs.push(lgName + ": " + e.message); }
+  }
+  if (!total) $("out").innerHTML = '<div class="msg">V tem obdobju ni tekem v izbranih ligah.</div>';
+  $("msg").className = errs.length ? "msg err" : "msg";
+  $("msg").textContent = `${total} tekem · Klici: ${calls}` + (credits ? ` · Krediti za kvote: ${credits}` : "")
+    + (used.length ? ` · Kvote naložene: ${used.join(", ")}` : "") + (errs.length ? " · " + errs.join(" · ") : "");
+  if (total) $("cpAll").style.display = "block";
 };
+
+let resText = "";
+$("res").onclick = async () => {
+  const lgs = sel(), d = $("rd").value;
+  $("msg").className = "msg"; $("out").innerHTML = ""; $("cpRes").style.display = "none";
+  if (!lgs.length){ $("msg").textContent = "Izberi vsaj eno ligo."; return; }
+  const out = [], errs = [];
+  for (const [lg, lgName] of lgs){
+    $("msg").textContent = `Nalagam ${lgName}...`;
+    try{
+      delete cache[lg]; // vedno sveži rezultati
+      const ms = (await getLeague(lg)).filter(m => inRange(m.utcDate, d, d)).sort((a,b)=>a.utcDate.localeCompare(b.utcDate));
+      if (!ms.length) continue;
+      out.push(`${lgName}:`);
+      for (const m of ms){
+        const ft = m.score.fullTime, ht = m.score.halfTime;
+        const t = new Date(m.utcDate).toLocaleTimeString("sl-SI",{timeZone:"Europe/Ljubljana",hour:"2-digit",minute:"2-digit"});
+        if (m.status === "FINISHED")
+          out.push(`${t} ${m.homeTeam.shortName} ${ft.home}:${ft.away} ${m.awayTeam.shortName}` + (ht && ht.home !== null ? ` (pol. ${ht.home}:${ht.away})` : ""));
+        else out.push(`${t} ${m.homeTeam.shortName} vs ${m.awayTeam.shortName}: ${m.status === "IN_PLAY" || m.status === "PAUSED" ? "v teku" : "ni končana (" + m.status + ")"}`);
+      }
+      out.push("");
+    }catch(e){ errs.push(lgName + ": " + e.message); }
+  }
+  resText = out.length ? `Rezultati ${d}\n\n` + out.join("\n").trim() : "";
+  $("out").innerHTML = resText ? `<pre>${resText.replace(/</g,"&lt;")}</pre>` : '<div class="msg">Ta dan ni tekem v izbranih ligah.</div>';
+  $("msg").className = errs.length ? "msg err" : "msg";
+  $("msg").textContent = `Klici: ${calls}` + (errs.length ? " · " + errs.join(" · ") : "");
+  if (resText) $("cpRes").style.display = "block";
+};
+$("cpRes").onclick = () => copy(resText, $("cpRes"));
 
 $("cpAll").onclick = () => copy(lastText.join("\n\n"), $("cpAll"));
 </script>
